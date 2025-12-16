@@ -9,13 +9,13 @@ import axios from "axios";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 interface Invoice {
-  order_id: number;
-  customer_name: string;
-  invoice_number: string;
-  order_date: string;
-  total_amount: number;
+  orderId: number;
+  customerName: string;
+  invoiceNumber: string;
+  orderDate: string;
+  totalAmount: number;
   status: string;
-  created_at: string;
+  createdAt: string;
 }
 
 export default function Home() {
@@ -40,8 +40,8 @@ export default function Home() {
 
   const filteredInvoices = invoices.filter(
     (invoice) =>
-      invoice.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      invoice.invoice_number.toLowerCase().includes(searchTerm.toLowerCase())
+      invoice.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      invoice.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -72,7 +72,7 @@ export default function Home() {
               placeholder="Search invoices..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full text-gray-800 pl-10 pr-4 py-2 border border-gray-800 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
         </div>
@@ -83,7 +83,7 @@ export default function Home() {
               Total Invoices
             </div>
             <div className="text-3xl font-bold text-gray-800">
-              {invoices.length}
+              {filteredInvoices.length}
             </div>
           </div>
           <div className="bg-white rounded-lg shadow-md p-6">
@@ -92,15 +92,18 @@ export default function Home() {
             </div>
             <div className="text-3xl font-bold text-green-600">
               $
-              {invoices
-                .reduce((sum, inv) => sum + inv.total_amount, 0)
+              {filteredInvoices
+                .reduce((sum, inv) => sum + inv.totalAmount, 0)
                 .toFixed(2)}
             </div>
           </div>
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="text-gray-600 text-sm font-medium mb-1">Status</div>
             <div className="text-3xl font-bold text-blue-600">
-              {invoices.filter((inv) => inv.status === "extracted").length}{" "}
+              {
+                filteredInvoices.filter((inv) => inv.status === "extracted")
+                  .length
+              }{" "}
               Active
             </div>
           </div>
@@ -155,25 +158,25 @@ export default function Home() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredInvoices.map((invoice) => (
-                  <tr key={invoice.order_id} className="hover:bg-gray-50">
+                  <tr key={invoice.orderId} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900">
-                        {invoice.invoice_number}
+                        {invoice.invoiceNumber}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
-                        {invoice.customer_name}
+                        {invoice.customerName}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-500">
-                        {format(new Date(invoice.order_date), "MMM dd, yyyy")}
+                        {format(new Date(invoice.orderDate), "MMM dd, yyyy")}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-gray-900">
-                        ${invoice.total_amount.toFixed(2)}
+                        ${invoice.totalAmount.toFixed(2)}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -189,7 +192,7 @@ export default function Home() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <Link
-                        href={`/invoice/${invoice.order_id}`}
+                        href={`/invoice/${invoice.orderId}`}
                         className="text-blue-600 hover:text-blue-900"
                       >
                         View

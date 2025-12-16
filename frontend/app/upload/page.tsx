@@ -78,7 +78,7 @@ export default function UploadPage() {
         },
       });
 
-      const newJobId = response.data.job_id;
+      const newJobId = response.data.jobId;
       setJobId(newJobId);
       setUploading(false);
       setProcessing(true);
@@ -93,7 +93,7 @@ export default function UploadPage() {
       });
 
       newSocket.on("processing_status", (data: any) => {
-        if (data.job_id === newJobId) {
+        if (data.jobId === newJobId) {
           setStatus(data.message || "Processing...");
 
           if (data.status === "completed") {
@@ -101,8 +101,8 @@ export default function UploadPage() {
             setStatus("Extraction completed successfully!");
 
             setTimeout(() => {
-              if (data.order_id) {
-                router.push(`/invoice/${data.order_id}`);
+              if (data.orderId) {
+                router.push(`/invoice/${data.orderId}`);
               } else {
                 router.push("/");
               }

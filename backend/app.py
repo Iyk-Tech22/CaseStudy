@@ -4,9 +4,9 @@ import os
 # Load environment variables from .env file
 load_dotenv()
 
-from app import create_app, socketio
+from app import createApp, socketio
 
-app = create_app()
+app = createApp()
 
 if __name__ == '__main__':
     # IMPORTANT: avoid Werkzeug dev reloader on Windows with Flask-SocketIO

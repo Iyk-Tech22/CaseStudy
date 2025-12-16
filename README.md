@@ -6,7 +6,7 @@
 
 - Python 3.8+ installed
 - Node.js 18+ and npm installed
-- (Optional) Hugging Face API token for better LLM performance
+- Google AI API token for better LLM performance
 
 ### Backend Setup
 
@@ -43,17 +43,7 @@ SECRET_KEY=dev-secret-key-change-in-production
 DATABASE_URL=sqlite:///invoice_extraction.db
 ```
 
-**Note**: You can get a free Hugging Face API token at https://huggingface.co/settings/tokens. The app will work without it, but may have rate limits.
-
-5. Generate sample invoices:
-
-```bash
-python generate_sample_invoices.py
-```
-
-This creates 5 sample PDF invoices in the `sample-invoices` directory.
-
-6. Start the Flask server:
+1. Start the Flask server:
 
 ```bash
 python app.py

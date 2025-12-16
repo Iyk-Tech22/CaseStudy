@@ -1,247 +1,453 @@
-import requests
 import json
 import os
-from typing import Dict, Any, Optional
+import re
 import base64
-from PIL import Image
 import io
+import traceback
+import random
+from typing import Dict, Any
+from datetime import datetime, timedelta
+from PIL import Image, ImageEnhance
+import PyPDF2
 
-class HuggingFaceLLMService:
+class GoogleLLMService:
     def __init__(self):
-        # Using Hugging Face API for document extraction
-        # Get your free token at https://huggingface.co/settings/tokens
-        self.api_token = os.environ.get('HUGGINGFACE_API_TOKEN', '')
+        """Initialize Google LLM Service using generative AI API"""
+        self.apiKey = os.environ.get('GOOGLE_API_KEY', '')
+        self.clientAvailable = False
+        self.easyocrAvailable = False
         
-        # Debug: Check if token is loaded
-        if self.api_token:
-            print(f"✓ Hugging Face API token loaded (length: {len(self.api_token)})")
+        # Check for EasyOCR
+        try:
+            import easyocr
+            self.easyocr = easyocr
+            self.ocrReader = None 
+            self.easyocrAvailable = True
+        except Exception as e:
+            print(f"⚠ EasyOCR not available: {e}")
+        
+        if self.apiKey:
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self.apiKey)
+                self.genai = genai
+                
+                self.modelName = self._findAvailableModel()
+                self.clientAvailable = bool(self.modelName)
+                
+                if self.modelName:
+                    print(f"✓ Google Generative AI API token loaded (using {self.modelName})")
+                else:
+                    print("⚠ Could not find available model for content generation")
+            except ImportError:
+                print("⚠ google-generativeai package not found. Install with: pip install google-generativeai")
+            except Exception as e:
+                print(f"⚠ Error initializing Google API: {e}")
         else:
-            print("⚠ Hugging Face API token not found. Using fallback data when API fails.")
-            print("  Set HUGGINGFACE_API_TOKEN in .env file to use LLM extraction.")
+            print("⚠ Google API key not found. Using fallback data when API fails.")
+           
+        self.generationConfig = {
+            "temperature": 0.1,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 4000,
+        }
         
-        # Use a text generation model that's good at structured extraction
-        # Updated to use new router endpoint (api-inference.huggingface.co is deprecated)
-        # Options: mistralai/Mistral-7B-Instruct-v0.2, meta-llama/Llama-2-7b-chat-hf, etc.
-        self.api_url = "https://router.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
-        
-        self.headers = {}
-        if self.api_token:
-            self.headers["Authorization"] = f"Bearer {self.api_token}"
-        
-        # Alternative models if primary fails
-        self.fallback_urls = [
-            "https://router.huggingface.co/models/meta-llama/Llama-2-7b-chat-hf",
-            "https://router.huggingface.co/models/google/flan-t5-large"
+        self.safetySettings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ]
     
-    def extract_text_from_pdf(self, pdf_path: str) -> str:
-        """Extract text from PDF file"""
+    def _findAvailableModel(self) -> str:
+        """Find an available model for content generation"""
+        modelsToTry = [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash-001",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite-001",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-pro-latest",
+            "gemini-1.5-flash-latest"
+        ]
+        
         try:
-            import PyPDF2
+            # List all available models
+            availableModels = self.genai.list_models()
+
+            # Try preferred models first
+            modelNames = [m.name.split('/')[-1] for m in availableModels]
+            for model in modelsToTry:
+                if model in modelNames:
+                    return model
+            for model in availableModels:
+                if "generateContent" in [method.name for method in model.supported_generation_methods]:
+                    return model.name.split('/')[-1]
+            
+            return None
+        except Exception as e:
+            print(f"Error finding available model: {e}")
+            return "gemini-2.5-flash"
+    
+    def extractTextFromImage(self, imagePath: str) -> str:
+        """Extract text from image using EasyOCR"""
+        if not self.easyocrAvailable:
+            print("⚠ EasyOCR not available, attempting Gemini vision extraction")
+            return self._extractViaGeminiVision(imagePath)
+        
+        try:
+            # Initialize OCR reader lazily (first time only)
+            if self.ocrReader is None:
+                print("Initializing EasyOCR reader...")
+                self.ocrReader = self.easyocr.Reader(['en'], gpu=False)
+            
+
+            result = self.ocrReader.readtext(imagePath)
+            text = "\n".join([line[1] for line in result if line[1]])
+            
+            if text and len(text.strip()) > 10:
+                print(f"✓ Extracted {len(text)} characters from image using EasyOCR")
+                return text
+            else:
+                print("⚠ Image OCR returned insufficient text, trying Gemini vision")
+                return self._extractViaGeminiVision(imagePath)
+        except Exception as e:
+            print(f"Error with EasyOCR: {e}, falling back to Gemini vision")
+            return self._extractViaGeminiVision(imagePath)
+    
+    def extractTextFromPdf(self, pdfPath: str) -> str:
+        """Extract text from PDF - tries text extraction first, then OCR if needed"""
+        try:
             text = ""
-            with open(pdf_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
-            return text
+            
+            # First, try standard text extraction (for text-based PDFs)
+            try:
+                with open(pdfPath, 'rb') as file:
+                    pdfReader = PyPDF2.PdfReader(file)
+                    for page in pdfReader.pages:
+                        pageText = page.extract_text()
+                        if pageText:
+                            text += pageText + "\n"
+            except Exception as e:
+                print(f"Standard PDF extraction failed: {e}")
+            
+            # If we got enough text, return it
+            if text and len(text.strip()) > 100:
+                print(f"✓ Extracted {len(text)} characters from PDF using text extraction")
+                return text
+            
+            # If text extraction didn't work well, try OCR with EasyOCR
+            if self.easyocrAvailable:
+                try:
+                    try:
+                        from pdf2image import convert_from_path
+                    except ImportError:
+                        print("pdf2image not installed. Install with: pip install pdf2image")
+                        raise
+                    
+                    print("Attempting EasyOCR on PDF pages...")
+                    # Initialize OCR reader if not already done
+                    if self.ocrReader is None:
+                        self.ocrReader = self.easyocr.Reader(['en'], gpu=False)
+                    
+                    pages = convert_from_path(pdfPath, first_page=1, last_page=5)
+                    
+                    ocrText = ""
+                    for pageNum, page in enumerate(pages, 1):
+                        result = self.ocrReader.readtext(page)
+                        pageText = "\n".join([line[1] for line in result if line[1]])
+                        if pageText:
+                            ocrText += f"--- Page {pageNum} ---\n{pageText}\n"
+                    
+                    if ocrText and len(ocrText.strip()) > 100:
+                        print(f"✓ Extracted {len(ocrText)} characters from PDF using EasyOCR")
+                        return ocrText
+                except Exception as e:
+                    print(f"PDF OCR extraction failed: {e}")
+            
+            if text:
+                print(f"⚠ PDF extraction returned {len(text)} characters (limited)")
+                return text
+            else:
+                print("⚠ Could not extract text from PDF")
+                return ""
+                
         except Exception as e:
             print(f"Error extracting text from PDF: {e}")
             return ""
     
-    def image_to_base64(self, image_path: str) -> str:
-        """Convert image to base64 string"""
+    def _extractViaGeminiVision(self, imagePath: str) -> str:
+        """Use Gemini's vision API to extract text from image"""
+        if not self.clientAvailable:
+            print("⚠ Google API not available for vision extraction")
+            return ""
+        
         try:
-            with open(image_path, 'rb') as image_file:
-                return base64.b64encode(image_file.read()).decode('utf-8')
+            # Read image and encode as base64
+            with open(imagePath, 'rb') as imgFile:
+                imageData = base64.standard_b64encode(imgFile.read()).decode('utf-8')
+            
+            # Determine image type
+            fileExt = imagePath.lower().split('.')[-1]
+            mimeTypeMap = {
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'webp': 'image/webp'
+            }
+            mimeType = mimeTypeMap.get(fileExt, 'image/jpeg')
+            
+            # Use Gemini to extract text from image
+            model = self.genai.GenerativeModel(self.modelName)
+            
+            prompt = """Extract all visible text from this document/invoice image. Return only the extracted text, nothing else."""
+            
+            response = model.generate_content([
+                {
+                    "mime_type": mimeType,
+                    "data": imageData
+                },
+                prompt
+            ])
+            
+            if response and response.text:
+                text = response.text.strip()
+                print(f"✓ Extracted {len(text)} characters using Gemini vision API")
+                return text
+            else:
+                print("⚠ No text extracted from image via Gemini")
+                return ""
+                
         except Exception as e:
-            print(f"Error converting image to base64: {e}")
+            print(f"Error with Gemini vision extraction: {e}")
             return ""
     
-    def call_llm_api(self, prompt: str, document_text: str = None) -> Dict[str, Any]:
-        """Call Hugging Face API for text generation"""
+    def extractTextFromDocument(self, filePath: str, fileType: str) -> str:
+        """Extract text from any document type"""
+        print(f"Extracting text from {fileType.upper()} file...")
+        
+        if fileType.lower() == "pdf":
+            return self.extractTextFromPdf(filePath)
+        else:
+            # For images
+            return self.extractTextFromImage(filePath)
+    
+    def callLlmApi(self, documentText: str) -> Dict[str, Any]:
+        """Call Google Generative AI API for text generation"""
+        if not self.clientAvailable:
+            return {"error": "Google API not available"}
+        
         try:
-            # Construct the full prompt with clear instructions
-            full_prompt = f"""<s>[INST] You are an expert at extracting structured data from invoices. Extract the following information from the document text and return ONLY a valid JSON object with this exact structure. Do not include any explanations or additional text.
+            prompt = f"""You are a professional document processing AI specialized in invoice data extraction. Your task is to analyze the provided document text and extract structured information as a valid JSON object.
 
+CRITICAL INSTRUCTIONS:
+1. Return ONLY a complete and valid JSON object - no additional text, markdown, or code blocks
+2. MUST start with '{{' and MUST end with '}}'
+3. ALL closing braces }} and brackets ] MUST be included - do not truncate
+4. If a field cannot be found, use empty string "" for text and 0 for numbers
+5. All required fields must be present in the output
+6. Parse dates to ISO format (YYYY-MM-DD)
+7. Amounts are numbers only, no currency symbols
+
+REQUIRED DATA STRUCTURE:
 {{
-  "customer_name": "string",
-  "customer_email": "string",
-  "order_date": "YYYY-MM-DD",
-  "invoice_number": "string",
-  "total_amount": number,
-  "tax_amount": number,
-  "shipping_address": "string",
-  "billing_address": "string",
+  "customer_name": "string (full name or company name)",
+  "customer_email": "string (email address)",
+  "order_date": "string (format: YYYY-MM-DD)",
+  "invoice_number": "string (invoice/receipt number)",
+  "total_amount": number (total payable amount as float/integer without currency symbol),
+  "tax_amount": number (tax amount as float/integer without currency symbol),
+  "shipping_address": "string (complete shipping address)",
+  "billing_address": "string (complete billing address)",
   "order_details": [
     {{
-      "product_name": "string",
-      "product_code": "string",
-      "quantity": number,
-      "unit_price": number,
-      "line_total": number,
-      "description": "string"
+      "product_name": "string (name of product/item)",
+      "product_code": "string (SKU/product code)",
+      "quantity": number (integer quantity),
+      "unit_price": number (price per unit as float/integer),
+      "line_total": number (quantity × unit_price as float/integer),
+      "description": "string (product description)"
     }}
   ]
 }}
 
-Document text:
-{document_text if document_text else prompt}
+EXTRACTION GUIDELINES:
+- "customer_name": Look for "Bill To:", "Customer:", "Client:", "Name:" or similar
+- "customer_email": Look for "Email:", "@" symbol patterns
+- "order_date": Look for "Date:", "Invoice Date:", "Order Date:" - convert to YYYY-MM-DD
+- "invoice_number": Look for "Invoice #:", "Receipt #:", "Order #:" 
+- "total_amount": Look for "Total:", "Amount Due:", "Grand Total:" - extract numeric value only
+- "tax_amount": Look for "Tax:", "VAT:", "GST:", "Tax Amount:" - extract numeric value only
+- "shipping_address": Look for "Ship To:", "Delivery Address:", "Shipping:" 
+- "billing_address": Look for "Bill To:", "Billing Address:", "Invoice Address:"
+- "order_details": Extract line items, typically in a table format with product information
 
-Return ONLY the JSON object: [/INST]"""
+DOCUMENT TEXT TO PROCESS:
+{documentText[:4000]}
 
-            payload = {
-                "inputs": full_prompt,
-                "parameters": {
-                    "max_new_tokens": 2000,
-                    "temperature": 0.1,
-                    "return_full_text": False,
-                    "top_p": 0.9
-                }
-            }
+Return ONLY the complete, valid JSON object with ALL closing braces and brackets. Do not truncate or omit any closing characters."""
+
+            model = self.genai.GenerativeModel(
+                model_name=self.modelName,
+                generation_config=self.generationConfig,
+                safety_settings=self.safetySettings
+            )
             
-            # Try primary model first
-            urls_to_try = [self.api_url] + self.fallback_urls
+            response = model.generate_content(prompt)
             
-            for url in urls_to_try:
-                try:
-                    response = requests.post(
-                        url,
-                        headers=self.headers,
-                        json=payload,
-                        timeout=90
-                    )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        
-                        # Handle different response formats
-                        if isinstance(result, list) and len(result) > 0:
-                            generated_text = result[0].get('generated_text', '')
-                        elif isinstance(result, dict):
-                            generated_text = result.get('generated_text', '')
-                        else:
-                            generated_text = str(result)
-                        
-                        if generated_text:
-                            parsed = self._parse_json_response(generated_text)
-                            if "error" not in parsed:
-                                return parsed
-                    
-                    elif response.status_code == 401:
-                        # Unauthorized - likely missing API token
-                        print(f"API Error: Unauthorized (401) - Missing or invalid API token for {url}")
-                        return {"error": "API authentication failed. Please check your HUGGINGFACE_API_TOKEN or use fallback data."}
-                    elif response.status_code == 410:
-                        # Gone - endpoint deprecated
-                        print(f"API Error: Endpoint deprecated (410) - {url}")
-                        error_msg = response.json().get('error', 'Endpoint no longer supported')
-                        print(f"  Message: {error_msg}")
-                        continue  # Try next model
-                    elif response.status_code == 503:
-                        # Model is loading, wait and retry
-                        print(f"Model {url} is loading, waiting 10 seconds...")
-                        import time
-                        time.sleep(10)
-                        continue
-                    else:
-                        print(f"API Error for {url}: {response.status_code} - {response.text[:200]}")
-                        continue
-                        
-                except requests.exceptions.Timeout:
-                    print(f"Timeout for {url}, trying next model...")
-                    continue
-                except Exception as e:
-                    print(f"Error with {url}: {e}")
-                    continue
-            
-            return {"error": "All API endpoints failed"}
+            if response and response.text:
+                print("✓ Got response from Google Generative AI")
+                print(f"Response preview: {response.text}")
+                parsed = self._parseJsonResponse(response.text)
+                return parsed
+            else:
+                return {"error": "No response from Google API"}
                 
         except Exception as e:
-            print(f"Error calling LLM API: {e}")
+            print(f"Error calling Google Generative AI: {e}")
             return {"error": str(e)}
     
-    def _parse_json_response(self, text: str) -> Dict[str, Any]:
+    def _parseJsonResponse(self, text: str) -> Dict[str, Any]:
         """Extract JSON from LLM response"""
         try:
-            # Try to find JSON in the response
-            text = text.strip()
-            
-            # Remove markdown code blocks if present
+            text = text.strip()           
             if text.startswith("```"):
-                lines = text.split("\n")
-                text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
-            
-            # Find JSON object
-            start_idx = text.find("{")
-            end_idx = text.rfind("}") + 1
-            
-            if start_idx >= 0 and end_idx > start_idx:
-                json_str = text[start_idx:end_idx]
-                return json.loads(json_str)
+                newline_idx = text.find("\n")
+                if newline_idx != -1:
+                    text = text[newline_idx + 1:].strip()
+                else:
+                    text = text[3:].strip()
+            if text.endswith("```"):
+                text = text[:-3].strip()
+            if "\n```" in text:
+                text = text[:text.rfind("\n```")].strip()
+
+            startIdx = text.find("{")
+            endIdx = text.rfind("}")
+                       
+            if startIdx >= 0 and endIdx > startIdx:
+                jsonStr = text[startIdx:endIdx + 1]
+                print(f"DEBUG - Extracted JSON string (length {len(jsonStr)})")
+                print(f"DEBUG - Attempting to parse JSON...")
+                data = json.loads(jsonStr)
+                print(f"DEBUG - JSON parsed successfully!")
+                return data
             else:
-                # If no JSON found, return error
-                return {"error": "No valid JSON found in response", "raw_response": text}
+                print(f"DEBUG - No valid JSON delimiters found (startIdx={startIdx}, endIdx={endIdx})")
+                # Try to handle incomplete JSON by adding missing closing brace
+                if startIdx >= 0 and endIdx == -1:
+                    print("DEBUG - JSON appears incomplete, attempting to fix...")
+                    jsonStr = text[startIdx:] + "}"
+                    try:
+                        data = json.loads(jsonStr)
+                        return data
+                    except json.JSONDecodeError as e:
+                        print(f"DEBUG - Failed with fix: {e}")
+                return {"error": "No valid JSON found in response", "raw_response": text[:200]}
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
-            return {"error": f"Failed to parse JSON: {str(e)}", "raw_response": text}
+            return {"error": f"Failed to parse JSON: {str(e)}", "raw_response": text[:200]}
     
-    def extract_invoice_data(self, file_path: str, file_type: str = "pdf") -> Dict[str, Any]:
+    def extractInvoiceData(self, filePath: str, fileType: str = "pdf") -> Dict[str, Any]:
         """Main method to extract invoice data from uploaded file"""
+        print("extracting invoice data")
         try:
-            # Extract text from document
-            if file_type.lower() == "pdf":
-                document_text = self.extract_text_from_pdf(file_path)
-            else:
-                # For images, try to use OCR or describe the image
-                # In a production system, you'd use Tesseract OCR or similar
-                # For now, we'll try to extract text if it's embedded, or use fallback
-                try:
-                    # Try to read as text if it's a text-based image format
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        document_text = f.read()
-                    if len(document_text.strip()) < 10:
-                        document_text = f"Image file uploaded: {file_path}. Please use PDF for better extraction results."
-                except:
-                    document_text = f"Image file uploaded: {file_path}. Please use PDF for better extraction results."
+            documentText = self.extractTextFromDocument(filePath, fileType)
             
-            if not document_text or len(document_text.strip()) < 10:
+            if not documentText or len(documentText.strip()) < 10:
                 return {
-                    "error": "Could not extract sufficient text from document. Please ensure the document contains readable text.",
-                    "fallback_data": self._generate_fallback_data()
+                    "error": "Could not extract sufficient text from document.",
+                    "fallback_data": self._generateFallbackData(),
+                    "extracted_text_preview": ""
                 }
             
-            # Call LLM API
-            result = self.call_llm_api("", document_text)
+            # Try Google API if available
+            if self.clientAvailable:
+                print("Using Google Generative AI API...")
+                result = self.callLlmApi(documentText)
+                
+                if "error" not in result:
+                    cleanedData = self._cleanExtractedData(result)
+                    cleanedData["extracted_text_preview"] = documentText[:500]
+                    return cleanedData
+                else:
+                    print(f"API failed: {result.get('error')}, using fallback...")
             
-            # Validate and clean the result
-            if "error" in result:
-                # Return fallback data if LLM fails
-                return {
-                    "error": result.get("error"),
-                    "fallback_data": self._generate_fallback_data(),
-                    "raw_response": result.get("raw_response", "")
-                }
+            # Fallback to rule-based extraction
+            localData = self._localExtraction(documentText)
+            cleanedData = self._cleanExtractedData(localData)
+            cleanedData["extracted_text_preview"] = documentText[:500]
             
-            # Ensure all required fields are present
-            cleaned_data = self._clean_extracted_data(result)
-            return cleaned_data
+            return cleanedData
             
         except Exception as e:
-            print(f"Error in extract_invoice_data: {e}")
-            import traceback
+            print(f"Error in extractInvoiceData: {e}")
             traceback.print_exc()
             return {
                 "error": str(e),
-                "fallback_data": self._generate_fallback_data()
+                "fallback_data": self._generateFallbackData()
             }
     
-    def _clean_extracted_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _localExtraction(self, text: str) -> Dict[str, Any]:
+        """Fallback rule-based extraction from text"""
+        data = {
+            "customer_name": "",
+            "customer_email": "",
+            "order_date": "",
+            "invoice_number": f"INV-{abs(hash(text)) % 10000:04d}",
+            "total_amount": 0.0,
+            "tax_amount": 0.0,
+            "shipping_address": "",
+            "billing_address": "",
+            "order_details": []
+        }
+        
+        # Enhanced patterns for extraction
+        patterns = {
+            "customer_name": r'(?:customer|client|bill to|sold to|name)[:\s]*([A-Za-z\s\.]{3,50})(?:\n|$)',
+            "invoice_number": r'(?:invoice|inv|number|#)[\s#:]*([A-Z0-9\-_]{3,20})',
+            "total_amount": r'(?:total|amount|due|balance)[\s:$]*([\d,]+\.?\d{0,2})',
+            "order_date": r'(?:date|invoice date|order date)[\s:]*([\d]{1,2}[/\-][\d]{1,2}[/\-][\d]{2,4})'
+        }
+        
+        for field, pattern in patterns.items():
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                if field == "total_amount":
+                    try:
+                        amountStr = matches[-1].replace(',', '')
+                        data[field] = float(amountStr)
+                    except:
+                        pass
+                elif field == "order_date":
+                    dateStr = matches[-1].strip()
+                    try:
+                        for fmt in ('%m/%d/%Y', '%d/%m/%Y', '%m-%d-%Y', '%Y-%m-%d', '%d-%m-%Y'):
+                            try:
+                                dt = datetime.strptime(dateStr, fmt)
+                                data[field] = dt.strftime('%Y-%m-%d')
+                                break
+                            except:
+                                continue
+                        if not data[field]:
+                            data[field] = dateStr
+                    except:
+                        data[field] = dateStr
+                else:
+                    data[field] = matches[0].strip()
+        
+        return data
+    
+    def _cleanExtractedData(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Clean and validate extracted data"""
         cleaned = {
             "customer_name": data.get("customer_name", "Unknown Customer"),
             "customer_email": data.get("customer_email", ""),
             "order_date": data.get("order_date", ""),
-            "invoice_number": data.get("invoice_number", f"INV-{hash(str(data)) % 10000}"),
+            "invoice_number": data.get("invoice_number", f"INV-{abs(hash(str(data))) % 10000:04d}"),
             "total_amount": float(data.get("total_amount", 0.0)),
             "tax_amount": float(data.get("tax_amount", 0.0)),
             "shipping_address": data.get("shipping_address", ""),
@@ -249,12 +455,11 @@ Return ONLY the JSON object: [/INST]"""
             "order_details": []
         }
         
-        # Clean order details
         details = data.get("order_details", [])
         if isinstance(details, list):
             for detail in details:
                 if isinstance(detail, dict):
-                    cleaned_detail = {
+                    cleanedDetail = {
                         "product_name": detail.get("product_name", "Unknown Product"),
                         "product_code": detail.get("product_code", ""),
                         "quantity": int(detail.get("quantity", 1)),
@@ -263,9 +468,9 @@ Return ONLY the JSON object: [/INST]"""
                         "description": detail.get("description", "")
                     }
                     # Calculate line_total if not provided
-                    if cleaned_detail["line_total"] == 0.0:
-                        cleaned_detail["line_total"] = cleaned_detail["quantity"] * cleaned_detail["unit_price"]
-                    cleaned["order_details"].append(cleaned_detail)
+                    if cleanedDetail["line_total"] == 0.0:
+                        cleanedDetail["line_total"] = cleanedDetail["quantity"] * cleanedDetail["unit_price"]
+                    cleaned["order_details"].append(cleanedDetail)
         
         # Calculate total if not provided or incorrect
         if cleaned["total_amount"] == 0.0 and cleaned["order_details"]:
@@ -274,53 +479,46 @@ Return ONLY the JSON object: [/INST]"""
         
         return cleaned
     
-    def _generate_fallback_data(self) -> Dict[str, Any]:
+    def _generateFallbackData(self) -> Dict[str, Any]:
         """Generate sample data if LLM extraction fails"""
-        import random
-        from datetime import datetime, timedelta
+        invoiceNum = f"INV-FALLBACK-{random.randint(1000, 9999)}"
+        orderDate = (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
         
-        # Generate a more realistic fallback invoice
-        invoice_num = f"INV-FALLBACK-{random.randint(1000, 9999)}"
-        order_date = (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
-        
-        # Sample products that might appear in invoices
-        sample_products = [
+        sampleProducts = [
             {"name": "Product XYZ", "code": "23423423", "price": 150.00, "qty": 15},
             {"name": "Product ABC", "code": "45645645", "price": 75.00, "qty": 1},
             {"name": "Web Development Service", "code": "WEB-001", "price": 5000.00, "qty": 1},
             {"name": "Consulting Hours", "code": "CONS-001", "price": 150.00, "qty": 40},
         ]
         
-        # Pick 1-3 random products
-        selected_products = random.sample(sample_products, random.randint(1, min(3, len(sample_products))))
+        selectedProducts = random.sample(sampleProducts, random.randint(1, min(3, len(sampleProducts))))
         
-        order_details = []
+        orderDetails = []
         subtotal = 0.0
-        for product in selected_products:
-            line_total = product["price"] * product["qty"]
-            subtotal += line_total
-            order_details.append({
+        for product in selectedProducts:
+            lineTotal = product["price"] * product["qty"]
+            subtotal += lineTotal
+            orderDetails.append({
                 "product_name": product["name"],
                 "product_code": product["code"],
                 "quantity": product["qty"],
                 "unit_price": product["price"],
-                "line_total": line_total,
+                "line_total": lineTotal,
                 "description": f"Sample {product['name']} description"
             })
         
-        tax_rate = 0.06875  # 6.875% like in the sample invoice
-        tax_amount = round(subtotal * tax_rate, 2)
-        total_amount = subtotal + tax_amount
+        taxRate = 0.06875
+        taxAmount = round(subtotal * taxRate, 2)
+        totalAmount = subtotal + taxAmount
         
         return {
             "customer_name": "Sample Customer",
             "customer_email": "customer@example.com",
-            "order_date": order_date,
-            "invoice_number": invoice_num,
-            "total_amount": round(total_amount, 2),
-            "tax_amount": tax_amount,
+            "order_date": orderDate,
+            "invoice_number": invoiceNum,
+            "total_amount": round(totalAmount, 2),
+            "tax_amount": taxAmount,
             "shipping_address": "123 Main St, City, State, ZIP",
             "billing_address": "123 Main St, City, State, ZIP",
-            "order_details": order_details
+            "order_details": orderDetails
         }
-

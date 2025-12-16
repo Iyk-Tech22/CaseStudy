@@ -3,61 +3,56 @@ from datetime import datetime
 
 class SalesOrderHeader(db.Model):
     __tablename__ = 'sales_order_header'
-    
-    order_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    customer_name = db.Column(db.String(200), nullable=False)
-    customer_email = db.Column(db.String(200))
-    order_date = db.Column(db.Date, nullable=False)
-    invoice_number = db.Column(db.String(100), unique=True, nullable=False)
-    total_amount = db.Column(db.Numeric(10, 2), nullable=False)
-    tax_amount = db.Column(db.Numeric(10, 2), default=0.00)
-    shipping_address = db.Column(db.Text)
-    billing_address = db.Column(db.Text)
+    orderId = db.Column(db.Integer, primary_key=True, autoincrement=True, name='order_id')
+    customerName = db.Column(db.String(200), nullable=False, name='customer_name')
+    customerEmail = db.Column(db.String(200), name='customer_email')
+    orderDate = db.Column(db.Date, nullable=False, name='order_date')
+    invoiceNumber = db.Column(db.String(100), unique=True, nullable=False, name='invoice_number')
+    totalAmount = db.Column(db.Numeric(10, 2), nullable=False, name='total_amount')
+    taxAmount = db.Column(db.Numeric(10, 2), default=0.00, name='tax_amount')
+    shippingAddress = db.Column(db.Text, name='shipping_address')
+    billingAddress = db.Column(db.Text, name='billing_address')
     status = db.Column(db.String(50), default='pending')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    createdAt = db.Column(db.DateTime, default=datetime.utcnow, name='created_at')
+    updatedAt = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, name='updated_at')
+    orderDetails = db.relationship('SalesOrderDetail', backref='order', cascade='all, delete-orphan', lazy=True)
     
-    # Relationship
-    order_details = db.relationship('SalesOrderDetail', backref='order', cascade='all, delete-orphan', lazy=True)
-    
-    def to_dict(self):
+    def toDict(self):
         return {
-            'order_id': self.order_id,
-            'customer_name': self.customer_name,
-            'customer_email': self.customer_email,
-            'order_date': self.order_date.isoformat() if self.order_date else None,
-            'invoice_number': self.invoice_number,
-            'total_amount': float(self.total_amount) if self.total_amount else 0.0,
-            'tax_amount': float(self.tax_amount) if self.tax_amount else 0.0,
-            'shipping_address': self.shipping_address,
-            'billing_address': self.billing_address,
+            'orderId': self.orderId,
+            'customerName': self.customerName,
+            'customerEmail': self.customerEmail,
+            'orderDate': self.orderDate.isoformat() if self.orderDate else None,
+            'invoiceNumber': self.invoiceNumber,
+            'totalAmount': float(self.totalAmount) if self.totalAmount else 0.0,
+            'taxAmount': float(self.taxAmount) if self.taxAmount else 0.0,
+            'shippingAddress': self.shippingAddress,
+            'billingAddress': self.billingAddress,
             'status': self.status,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'order_details': [detail.to_dict() for detail in self.order_details]
+            'createdAt': self.createdAt.isoformat() if self.createdAt else None,
+            'updatedAt': self.updatedAt.isoformat() if self.updatedAt else None,
+            'orderDetails': [detail.toDict() for detail in self.orderDetails]
         }
 
 class SalesOrderDetail(db.Model):
     __tablename__ = 'sales_order_detail'
-    
-    detail_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    order_id = db.Column(db.Integer, db.ForeignKey('sales_order_header.order_id'), nullable=False)
-    product_name = db.Column(db.String(200), nullable=False)
-    product_code = db.Column(db.String(100))
+    detailId = db.Column(db.Integer, primary_key=True, autoincrement=True, name='detail_id')
+    orderId = db.Column(db.Integer, db.ForeignKey('sales_order_header.order_id'), nullable=False, name='order_id')
+    productName = db.Column(db.String(200), nullable=False, name='product_name')
+    productCode = db.Column(db.String(100), name='product_code')
     quantity = db.Column(db.Integer, nullable=False)
-    unit_price = db.Column(db.Numeric(10, 2), nullable=False)
-    line_total = db.Column(db.Numeric(10, 2), nullable=False)
+    unitPrice = db.Column(db.Numeric(10, 2), nullable=False, name='unit_price')
+    lineTotal = db.Column(db.Numeric(10, 2), nullable=False, name='line_total')
     description = db.Column(db.Text)
     
-    def to_dict(self):
+    def toDict(self):
         return {
-            'detail_id': self.detail_id,
-            'order_id': self.order_id,
-            'product_name': self.product_name,
-            'product_code': self.product_code,
+            'detailId': self.detailId,
+            'orderId': self.orderId,
+            'productName': self.productName,
+            'productCode': self.productCode,
             'quantity': self.quantity,
-            'unit_price': float(self.unit_price) if self.unit_price else 0.0,
-            'line_total': float(self.line_total) if self.line_total else 0.0,
+            'unitPrice': float(self.unitPrice) if self.unitPrice else 0.0,
+            'lineTotal': float(self.lineTotal) if self.lineTotal else 0.0,
             'description': self.description
         }
-

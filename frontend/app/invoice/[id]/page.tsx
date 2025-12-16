@@ -10,27 +10,27 @@ import Link from "next/link";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 interface OrderDetail {
-  detail_id?: number;
-  product_name: string;
-  product_code: string;
+  detailId?: number;
+  productName: string;
+  productCode: string;
   quantity: number;
-  unit_price: number;
-  line_total: number;
+  unitPrice: number;
+  lineTotal: number;
   description: string;
 }
 
 interface Invoice {
-  order_id: number;
-  customer_name: string;
-  customer_email: string;
-  order_date: string;
-  invoice_number: string;
-  total_amount: number;
-  tax_amount: number;
-  shipping_address: string;
-  billing_address: string;
+  orderId: number;
+  customerName: string;
+  customerEmail: string;
+  orderDate: string;
+  invoiceNumber: string;
+  totalAmount: number;
+  taxAmount: number;
+  shippingAddress: string;
+  billingAddress: string;
   status: string;
-  order_details: OrderDetail[];
+  orderDetails: OrderDetail[];
 }
 
 export default function InvoiceDetailPage() {
@@ -43,14 +43,14 @@ export default function InvoiceDetailPage() {
   const [error, setError] = useState("");
 
   const [formData, setFormData] = useState({
-    customer_name: "",
-    customer_email: "",
-    order_date: "",
-    invoice_number: "",
-    total_amount: 0,
-    tax_amount: 0,
-    shipping_address: "",
-    billing_address: "",
+    customerName: "",
+    customerEmail: "",
+    orderDate: "",
+    invoiceNumber: "",
+    totalAmount: 0,
+    taxAmount: 0,
+    shippingAddress: "",
+    billingAddress: "",
     status: "",
   });
 
@@ -68,17 +68,17 @@ export default function InvoiceDetailPage() {
       const data = response.data;
       setInvoice(data);
       setFormData({
-        customer_name: data.customer_name || "",
-        customer_email: data.customer_email || "",
-        order_date: data.order_date || "",
-        invoice_number: data.invoice_number || "",
-        total_amount: data.total_amount || 0,
-        tax_amount: data.tax_amount || 0,
-        shipping_address: data.shipping_address || "",
-        billing_address: data.billing_address || "",
+        customerName: data.customerName || "",
+        customerEmail: data.customerEmail || "",
+        orderDate: data.orderDate || "",
+        invoiceNumber: data.invoiceNumber || "",
+        totalAmount: data.totalAmount || 0,
+        taxAmount: data.taxAmount || 0,
+        shippingAddress: data.shippingAddress || "",
+        billingAddress: data.billingAddress || "",
         status: data.status || "",
       });
-      setDetails(data.order_details || []);
+      setDetails(data.orderDetails || []);
     } catch (err: any) {
       setError(err.response?.data?.error || "Failed to load invoice");
     } finally {
@@ -93,7 +93,7 @@ export default function InvoiceDetailPage() {
     setFormData((prev) => ({
       ...prev,
       [name]:
-        name === "total_amount" || name === "tax_amount"
+        name === "totalAmount" || name === "taxAmount"
           ? parseFloat(value) || 0
           : value,
     }));
@@ -107,17 +107,17 @@ export default function InvoiceDetailPage() {
     const updated = [...details];
     updated[index] = { ...updated[index], [field]: value };
 
-    if (field === "quantity" || field === "unit_price") {
-      updated[index].line_total =
-        updated[index].quantity * updated[index].unit_price;
+    if (field === "quantity" || field === "unitPrice") {
+      updated[index].lineTotal =
+        updated[index].quantity * updated[index].unitPrice;
     }
 
     setDetails(updated);
 
-    const subtotal = updated.reduce((sum, d) => sum + d.line_total, 0);
+    const subtotal = updated.reduce((sum, d) => sum + d.lineTotal, 0);
     setFormData((prev) => ({
       ...prev,
-      total_amount: subtotal + prev.tax_amount,
+      totalAmount: subtotal + prev.taxAmount,
     }));
   };
 
@@ -125,11 +125,11 @@ export default function InvoiceDetailPage() {
     setDetails([
       ...details,
       {
-        product_name: "",
-        product_code: "",
+        productName: "",
+        productCode: "",
         quantity: 1,
-        unit_price: 0,
-        line_total: 0,
+        unitPrice: 0,
+        lineTotal: 0,
         description: "",
       },
     ]);
@@ -139,10 +139,10 @@ export default function InvoiceDetailPage() {
     const updated = details.filter((_, i) => i !== index);
     setDetails(updated);
 
-    const subtotal = updated.reduce((sum, d) => sum + d.line_total, 0);
+    const subtotal = updated.reduce((sum, d) => sum + d.lineTotal, 0);
     setFormData((prev) => ({
       ...prev,
-      total_amount: subtotal + prev.tax_amount,
+      totalAmount: subtotal + prev.taxAmount,
     }));
   };
 
@@ -151,15 +151,15 @@ export default function InvoiceDetailPage() {
     setError("");
 
     try {
-      await axios.put(`${API_URL}/api/invoices/${invoice?.order_id}`, formData);
+      await axios.put(`${API_URL}/api/invoices/${invoice?.orderId}`, formData);
 
       await axios.put(
-        `${API_URL}/api/invoices/${invoice?.order_id}/details`,
+        `${API_URL}/api/invoices/${invoice?.orderId}/details`,
         details
       );
 
       setEditing(false);
-      fetchInvoice(invoice!.order_id);
+      fetchInvoice(invoice!.orderId);
     } catch (err: any) {
       setError(err.response?.data?.error || "Failed to save invoice");
     } finally {
@@ -171,7 +171,7 @@ export default function InvoiceDetailPage() {
     if (!confirm("Are you sure you want to delete this invoice?")) return;
 
     try {
-      await axios.delete(`${API_URL}/api/invoices/${invoice?.order_id}`);
+      await axios.delete(`${API_URL}/api/invoices/${invoice?.orderId}`);
       router.push("/");
     } catch (err: any) {
       setError(err.response?.data?.error || "Failed to delete invoice");
@@ -220,7 +220,7 @@ export default function InvoiceDetailPage() {
                   <button
                     onClick={() => {
                       setEditing(false);
-                      fetchInvoice(invoice.order_id);
+                      fetchInvoice(invoice.orderId);
                     }}
                     className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50"
                   >
@@ -274,13 +274,13 @@ export default function InvoiceDetailPage() {
                 {editing ? (
                   <input
                     type="text"
-                    name="customer_name"
-                    value={formData.customer_name}
+                    name="customerName"
+                    value={formData.customerName}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
-                  <p className="text-gray-900">{invoice.customer_name}</p>
+                  <p className="text-gray-900">{invoice.customerName}</p>
                 )}
               </div>
 
@@ -291,14 +291,14 @@ export default function InvoiceDetailPage() {
                 {editing ? (
                   <input
                     type="email"
-                    name="customer_email"
-                    value={formData.customer_email}
+                    name="customerEmail"
+                    value={formData.customerEmail}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
                   <p className="text-gray-900">
-                    {invoice.customer_email || "N/A"}
+                    {invoice.customerEmail || "N/A"}
                   </p>
                 )}
               </div>
@@ -310,13 +310,13 @@ export default function InvoiceDetailPage() {
                 {editing ? (
                   <input
                     type="text"
-                    name="invoice_number"
-                    value={formData.invoice_number}
+                    name="invoiceNumber"
+                    value={formData.invoiceNumber}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
-                  <p className="text-gray-900">{invoice.invoice_number}</p>
+                  <p className="text-gray-900">{invoice.invoiceNumber}</p>
                 )}
               </div>
 
@@ -327,14 +327,14 @@ export default function InvoiceDetailPage() {
                 {editing ? (
                   <input
                     type="date"
-                    name="order_date"
-                    value={formData.order_date}
+                    name="orderDate"
+                    value={formData.orderDate}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
                   <p className="text-gray-900">
-                    {format(new Date(invoice.order_date), "MMMM dd, yyyy")}
+                    {format(new Date(invoice.orderDate), "MMMM dd, yyyy")}
                   </p>
                 )}
               </div>
@@ -345,15 +345,15 @@ export default function InvoiceDetailPage() {
                 </label>
                 {editing ? (
                   <textarea
-                    name="shipping_address"
-                    value={formData.shipping_address}
+                    name="shippingAddress"
+                    value={formData.shippingAddress}
                     onChange={handleInputChange}
                     rows={3}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
                   <p className="text-gray-900 whitespace-pre-line">
-                    {invoice.shipping_address || "N/A"}
+                    {invoice.shippingAddress || "N/A"}
                   </p>
                 )}
               </div>
@@ -364,15 +364,15 @@ export default function InvoiceDetailPage() {
                 </label>
                 {editing ? (
                   <textarea
-                    name="billing_address"
-                    value={formData.billing_address}
+                    name="billingAddress"
+                    value={formData.billingAddress}
                     onChange={handleInputChange}
                     rows={3}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
                   <p className="text-gray-900 whitespace-pre-line">
-                    {invoice.billing_address || "N/A"}
+                    {invoice.billingAddress || "N/A"}
                   </p>
                 )}
               </div>
@@ -385,14 +385,14 @@ export default function InvoiceDetailPage() {
                   <input
                     type="number"
                     step="0.01"
-                    name="tax_amount"
-                    value={formData.tax_amount}
+                    name="taxAmount"
+                    value={formData.taxAmount}
                     onChange={handleInputChange}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 bg-white"
                   />
                 ) : (
                   <p className="text-gray-900">
-                    ${invoice.tax_amount.toFixed(2)}
+                    ${invoice.taxAmount.toFixed(2)}
                   </p>
                 )}
               </div>
@@ -402,7 +402,7 @@ export default function InvoiceDetailPage() {
                   Total Amount
                 </label>
                 <p className="text-2xl font-bold text-gray-900">
-                  ${formData.total_amount.toFixed(2)}
+                  ${formData.totalAmount.toFixed(2)}
                 </p>
               </div>
             </div>
@@ -457,11 +457,11 @@ export default function InvoiceDetailPage() {
                         {editing ? (
                           <input
                             type="text"
-                            value={detail.product_code}
+                            value={detail.productCode}
                             onChange={(e) =>
                               handleDetailChange(
                                 index,
-                                "product_code",
+                                "productCode",
                                 e.target.value
                               )
                             }
@@ -469,7 +469,7 @@ export default function InvoiceDetailPage() {
                           />
                         ) : (
                           <span className="text-sm text-gray-900">
-                            {detail.product_code || "N/A"}
+                            {detail.productCode || "N/A"}
                           </span>
                         )}
                       </td>
@@ -477,11 +477,11 @@ export default function InvoiceDetailPage() {
                         {editing ? (
                           <input
                             type="text"
-                            value={detail.product_name}
+                            value={detail.productName}
                             onChange={(e) =>
                               handleDetailChange(
                                 index,
-                                "product_name",
+                                "productName",
                                 e.target.value
                               )
                             }
@@ -489,7 +489,7 @@ export default function InvoiceDetailPage() {
                           />
                         ) : (
                           <span className="text-sm text-gray-900">
-                            {detail.product_name}
+                            {detail.productName}
                           </span>
                         )}
                       </td>
@@ -518,11 +518,11 @@ export default function InvoiceDetailPage() {
                           <input
                             type="number"
                             step="0.01"
-                            value={detail.unit_price}
+                            value={detail.unitPrice}
                             onChange={(e) =>
                               handleDetailChange(
                                 index,
-                                "unit_price",
+                                "unitPrice",
                                 parseFloat(e.target.value) || 0
                               )
                             }
@@ -530,13 +530,13 @@ export default function InvoiceDetailPage() {
                           />
                         ) : (
                           <span className="text-sm text-gray-900">
-                            ${detail.unit_price.toFixed(2)}
+                            ${detail.unitPrice.toFixed(2)}
                           </span>
                         )}
                       </td>
                       <td className="px-4 py-3">
                         <span className="text-sm font-semibold text-gray-900">
-                          ${detail.line_total.toFixed(2)}
+                          ${detail.lineTotal.toFixed(2)}
                         </span>
                       </td>
                       {editing && (

@@ -1,257 +1,254 @@
 from flask import Blueprint, request, jsonify, send_from_directory, current_app
 from app import db, socketio
 from app.models import SalesOrderHeader, SalesOrderDetail
-from app.llm_service import HuggingFaceLLMService
+from app.llm_service import GoogleLLMService
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import os
 import threading
 import uuid
+import traceback
 
 bp = Blueprint('api', __name__)
-llm_service = HuggingFaceLLMService()
-
+llmService = GoogleLLMService()
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 
-def allowed_file(filename):
+def allowedFile(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @bp.route('/api/health', methods=['GET'])
-def health_check():
+def healthCheck():
     return jsonify({"status": "healthy", "message": "API is running"})
 
 @bp.route('/api/upload', methods=['POST'])
-def upload_file():
+def uploadFile():
     """Handle file upload and start processing"""
     if 'file' not in request.files:
         return jsonify({"error": "No file provided"}), 400
     
     file = request.files['file']
+
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
     
-    if not allowed_file(file.filename):
+    if not allowedFile(file.filename):
         return jsonify({"error": "File type not allowed. Use PDF or image files."}), 400
     
     try:
-        # Get upload folder from current app context
-        # Use current_app which is available in request context
         try:
-            upload_folder = current_app.config['UPLOAD_FOLDER']
+            uploadFolder = current_app.config['UPLOAD_FOLDER']
         except RuntimeError:
-            # Fallback: use direct path if context issue
-            upload_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
-            os.makedirs(upload_folder, exist_ok=True)
-        
-        # Save file
+            uploadFolder = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+            os.makedirs(uploadFolder, exist_ok=True)
+  
         filename = secure_filename(file.filename)
-        file_ext = filename.rsplit('.', 1)[1].lower()
-        unique_filename = f"{uuid.uuid4()}.{file_ext}"
-        file_path = os.path.join(upload_folder, unique_filename)
-        file.save(file_path)
-        
-        # Generate job ID
-        job_id = str(uuid.uuid4())
-        
-        # Start processing in background thread with app context
-        # Pass the app instance to ensure context is available
-        from flask import current_app as app_instance
-        app_obj = app_instance._get_current_object()
+        fileExt = filename.rsplit('.', 1)[1].lower()
+        uniqueFilename = f"{uuid.uuid4()}.{fileExt}"
+        filePath = os.path.join(uploadFolder, uniqueFilename)
+        file.save(filePath)
+  
+        jobId = str(uuid.uuid4())
+
+        from flask import current_app as appInstance
+        appObj = appInstance._get_current_object()
+
         socketio.start_background_task(
-            process_document,
-            job_id, file_path, file_ext, upload_folder, app_obj
+            processDocument,
+            jobId, filePath, fileExt, uploadFolder, appObj
         )
         
         return jsonify({
-            "job_id": job_id,
+            "jobId": jobId,
             "message": "File uploaded successfully. Processing started.",
             "filename": filename
         }), 200
         
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"Upload error: {error_trace}")  # Log full traceback for debugging
+        errorTrace = traceback.format_exc()
+        print(f"Upload error: {errorTrace}")
         return jsonify({
             "error": str(e),
-            "traceback": error_trace if current_app.debug else None
+            "traceback": errorTrace if current_app.debug else None
         }), 500
 
-def process_document(job_id, file_path, file_type, upload_folder, app_instance=None):
-    """Process document in background and emit WebSocket updates"""
-    # Import here to avoid circular imports
+def processDocument(jobId, filePath, fileType, uploadFolder, appInstance=None):
+    """Process document in background and emit web socket updates"""
     from app import db, socketio
+    if appInstance is None:
+        from app import createApp
+        appInstance = createApp()
     
-    # Ensure we have app context for database operations
-    if app_instance is None:
-        from app import create_app
-        app_instance = create_app()
-    
-    # Use app context for all operations
-    with app_instance.app_context():
+    with appInstance.app_context():
         try:
-            # Emit processing started
             socketio.emit('processing_status', {
-                'job_id': job_id,
+                'jobId': jobId,
                 'status': 'processing',
                 'message': 'Extracting data from document...'
             })
             
-            # Extract data using LLM
-            extracted_data = llm_service.extract_invoice_data(file_path, file_type)
+            extractedData = llmService.extractInvoiceData(filePath, fileType)
             
-            if "error" in extracted_data and "fallback_data" not in extracted_data:
+            if "error" in extractedData and "fallback_data" not in extractedData:
                 socketio.emit('processing_status', {
-                    'job_id': job_id,
+                    'jobId': jobId,
                     'status': 'error',
-                    'message': extracted_data.get('error', 'Unknown error occurred')
+                    'message': extractedData.get('error', 'Unknown error occurred')
                 })
                 return
             
-            # Use fallback data if main extraction failed
-            using_fallback = "fallback_data" in extracted_data
-            data = extracted_data.get('fallback_data', extracted_data) if using_fallback else extracted_data
+            data = extractedData.get('fallback_data', extractedData) if "fallback_data" in extractedData else extractedData
             
-            # Emit extraction complete
-            message = 'Data extracted successfully (using fallback data - LLM API not available)' if using_fallback else 'Data extracted successfully'
             socketio.emit('processing_status', {
-                'job_id': job_id,
+                'jobId': jobId,
                 'status': 'extracted',
-                'message': message,
+                'message': 'Data extracted successfully',
                 'data': data,
-                'using_fallback': using_fallback
             })
             
-            # Save to database
             try:
-                # Create order header
-                order_date = datetime.strptime(data['order_date'], '%Y-%m-%d').date() if data.get('order_date') else datetime.now().date()
+                orderDate = None
+                if data.get('order_date'):
+                    try:
+                        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y'):
+                            try:
+                                orderDate = datetime.strptime(data['order_date'], fmt).date()
+                                break
+                            except ValueError:
+                                continue
+                    except Exception:
+                        orderDate = datetime.now().date()
+                else:
+                    orderDate = datetime.now().date()
                 
                 order = SalesOrderHeader(
-                    customer_name=data['customer_name'],
-                    customer_email=data.get('customer_email', ''),
-                    order_date=order_date,
-                    invoice_number=data['invoice_number'],
-                    total_amount=data['total_amount'],
-                    tax_amount=data.get('tax_amount', 0.0),
-                    shipping_address=data.get('shipping_address', ''),
-                    billing_address=data.get('billing_address', ''),
-                    status='extracted'
+                    customerName=data.get('customer_name', ''),
+                    customerEmail=data.get('customer_email', ''),
+                    orderDate=orderDate,
+                    invoiceNumber=data.get('invoice_number', ''),
+                    totalAmount=data.get('total_amount', 0.0),
+                    taxAmount=data.get('tax_amount', 0.0),
+                    shippingAddress=data.get('shipping_address', ''),
+                    billingAddress=data.get('billing_address', ''),
+                    status='extracted',
                 )
                 
                 db.session.add(order)
-                db.session.flush()  # Get the order_id
+                db.session.flush()
                 
-                # Create order details
-                for detail_data in data.get('order_details', []):
+                for detailData in data.get('order_details', []):
                     detail = SalesOrderDetail(
-                        order_id=order.order_id,
-                        product_name=detail_data['product_name'],
-                        product_code=detail_data.get('product_code', ''),
-                        quantity=detail_data['quantity'],
-                        unit_price=detail_data['unit_price'],
-                        line_total=detail_data['line_total'],
-                        description=detail_data.get('description', '')
+                        orderId=order.orderId,
+                        productName=detailData['product_name'],
+                        productCode=detailData.get('product_code', ''),
+                        quantity=detailData['quantity'],
+                        unitPrice=detailData['unit_price'],
+                        lineTotal=detailData['line_total'],
+                        description=detailData.get('description', '')
                     )
                     db.session.add(detail)
                 
                 db.session.commit()
                 
-                # Emit completion with saved data
                 socketio.emit('processing_status', {
-                    'job_id': job_id,
+                    'jobId': jobId,
                     'status': 'completed',
                     'message': 'Invoice saved to database',
-                    'order_id': order.order_id,
-                    'data': order.to_dict()
+                    'orderId': order.orderId,
+                    'data': order.toDict(),
                 })
                 
             except Exception as e:
                 db.session.rollback()
+                errorTrace = traceback.format_exc()
+                print(f"Database error: {errorTrace}")
+                
                 socketio.emit('processing_status', {
-                    'job_id': job_id,
+                    'jobId': jobId,
                     'status': 'error',
                     'message': f'Database error: {str(e)}'
                 })
-            
-            # Clean up uploaded file (optional)
-            # os.remove(file_path)
+        
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            errorTrace = traceback.format_exc()
+            print(f"Processing error: {errorTrace}")
+            
             socketio.emit('processing_status', {
-                'job_id': job_id,
+                'jobId': jobId,
                 'status': 'error',
                 'message': f'Processing error: {str(e)}'
             })
 
 @bp.route('/api/invoices', methods=['GET'])
-def get_invoices():
+def getInvoices():
     """Get all invoices with pagination"""
     page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
+    perPage = request.args.get('per_page', 10, type=int)
     
-    invoices = SalesOrderHeader.query.order_by(SalesOrderHeader.created_at.desc()).paginate(
-        page=page, per_page=per_page, error_out=False
+    invoices = SalesOrderHeader.query.order_by(SalesOrderHeader.createdAt.desc()).paginate(
+        page=page, per_page=perPage, error_out=False
     )
     
     return jsonify({
-        'invoices': [invoice.to_dict() for invoice in invoices.items],
+        'invoices': [invoice.toDict() for invoice in invoices.items],
         'total': invoices.total,
         'page': page,
-        'per_page': per_page,
+        'perPage': perPage,
         'pages': invoices.pages
     })
 
 @bp.route('/api/invoices/<int:order_id>', methods=['GET'])
-def get_invoice(order_id):
+def getInvoice(order_id):
     """Get a specific invoice"""
     order = SalesOrderHeader.query.get_or_404(order_id)
-    return jsonify(order.to_dict())
+    return jsonify(order.toDict())
 
 @bp.route('/api/invoices/<int:order_id>', methods=['PUT'])
-def update_invoice(order_id):
+def updateInvoice(order_id):
     """Update invoice header"""
     order = SalesOrderHeader.query.get_or_404(order_id)
     data = request.json
     
     try:
-        if 'customer_name' in data:
-            order.customer_name = data['customer_name']
-        if 'customer_email' in data:
-            order.customer_email = data['customer_email']
-        if 'order_date' in data:
-            order.order_date = datetime.strptime(data['order_date'], '%Y-%m-%d').date()
-        if 'invoice_number' in data:
-            order.invoice_number = data['invoice_number']
-        if 'total_amount' in data:
-            order.total_amount = data['total_amount']
-        if 'tax_amount' in data:
-            order.tax_amount = data['tax_amount']
-        if 'shipping_address' in data:
-            order.shipping_address = data['shipping_address']
-        if 'billing_address' in data:
-            order.billing_address = data['billing_address']
+        if 'customerName' in data:
+            order.customerName = data['customerName']
+        if 'customerEmail' in data:
+            order.customerEmail = data['customerEmail']
+        if 'orderDate' in data:
+            try:
+                order.orderDate = datetime.strptime(data['orderDate'], '%Y-%m-%d').date()
+            except ValueError:
+                return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+        if 'invoiceNumber' in data:
+            order.invoiceNumber = data['invoiceNumber']
+        if 'totalAmount' in data:
+            order.totalAmount = float(data['totalAmount'])
+        if 'taxAmount' in data:
+            order.taxAmount = float(data['taxAmount'])
+        if 'shippingAddress' in data:
+            order.shippingAddress = data['shippingAddress']
+        if 'billingAddress' in data:
+            order.billingAddress = data['billingAddress']
         if 'status' in data:
             order.status = data['status']
         
-        order.updated_at = datetime.utcnow()
+        order.updatedAt = datetime.utcnow()
         db.session.commit()
         
-        # Emit update via WebSocket
         socketio.emit('invoice_updated', {
-            'order_id': order_id,
-            'data': order.to_dict()
-        })
+            'orderId': order_id,
+            'data': order.toDict()
+        }, skip_sid=None)
         
-        return jsonify(order.to_dict())
+        return jsonify(order.toDict())
     except Exception as e:
         db.session.rollback()
+        errorTrace = traceback.format_exc()
+        print(f"Update error: {errorTrace}")
         return jsonify({"error": str(e)}), 400
 
 @bp.route('/api/invoices/<int:order_id>', methods=['DELETE'])
-def delete_invoice(order_id):
+def deleteInvoice(order_id):
     """Delete an invoice"""
     order = SalesOrderHeader.query.get_or_404(order_id)
     
@@ -259,8 +256,7 @@ def delete_invoice(order_id):
         db.session.delete(order)
         db.session.commit()
         
-        # Emit deletion via WebSocket
-        socketio.emit('invoice_deleted', {'order_id': order_id})
+        socketio.emit('invoice_deleted', {'orderId': order_id}, skip_sid=None)
         
         return jsonify({"message": "Invoice deleted successfully"})
     except Exception as e:
@@ -268,13 +264,13 @@ def delete_invoice(order_id):
         return jsonify({"error": str(e)}), 400
 
 @bp.route('/api/invoices/<int:order_id>/details', methods=['GET'])
-def get_invoice_details(order_id):
+def getInvoiceDetails(order_id):
     """Get all details for an invoice"""
     order = SalesOrderHeader.query.get_or_404(order_id)
-    return jsonify([detail.to_dict() for detail in order.order_details])
+    return jsonify([detail.toDict() for detail in order.orderDetails])
 
 @bp.route('/api/invoices/<int:order_id>/details', methods=['PUT'])
-def update_invoice_details(order_id):
+def updateInvoiceDetails(order_id):
     """Update invoice details (replace all)"""
     order = SalesOrderHeader.query.get_or_404(order_id)
     data = request.json
@@ -283,64 +279,63 @@ def update_invoice_details(order_id):
         return jsonify({"error": "Expected array of detail objects"}), 400
     
     try:
-        # Delete existing details
-        SalesOrderDetail.query.filter_by(order_id=order_id).delete()
+        SalesOrderDetail.query.filter_by(orderId=order_id).delete()
         
-        # Add new details
-        total_amount = 0.0
-        for detail_data in data:
+        totalAmount = 0.0
+        for detailData in data:
+            lineTotal = detailData.get('lineTotal', 
+                float(detailData['quantity']) * float(detailData['unitPrice']))
+            
             detail = SalesOrderDetail(
-                order_id=order_id,
-                product_name=detail_data['product_name'],
-                product_code=detail_data.get('product_code', ''),
-                quantity=detail_data['quantity'],
-                unit_price=detail_data['unit_price'],
-                line_total=detail_data.get('line_total', detail_data['quantity'] * detail_data['unit_price']),
-                description=detail_data.get('description', '')
+                orderId=order_id,
+                productName=detailData['productName'],
+                productCode=detailData.get('productCode', ''),
+                quantity=float(detailData['quantity']),
+                unitPrice=float(detailData['unitPrice']),
+                lineTotal=float(lineTotal),
+                description=detailData.get('description', '')
             )
             db.session.add(detail)
-            total_amount += float(detail.line_total)
+            totalAmount += float(lineTotal)
         
-        # Update order total
-        order.total_amount = total_amount + float(order.tax_amount)
-        order.updated_at = datetime.utcnow()
+        order.totalAmount = totalAmount + float(order.taxAmount)
+        order.updatedAt = datetime.utcnow()
         
         db.session.commit()
         
-        # Emit update via WebSocket
         socketio.emit('invoice_updated', {
-            'order_id': order_id,
-            'data': order.to_dict()
-        })
+            'orderId': order_id,
+            'data': order.toDict()
+        }, skip_sid=None)
         
-        return jsonify([detail.to_dict() for detail in order.order_details])
+        return jsonify([detail.toDict() for detail in order.orderDetails])
     except Exception as e:
         db.session.rollback()
+        errorTrace = traceback.format_exc()
+        print(f"Update details error: {errorTrace}")
         return jsonify({"error": str(e)}), 400
 
 @bp.route('/api/invoices/<int:order_id>/details/<int:detail_id>', methods=['DELETE'])
-def delete_invoice_detail(order_id, detail_id):
+def deleteInvoiceDetail(order_id, detail_id):
     """Delete a specific detail"""
-    detail = SalesOrderDetail.query.filter_by(detail_id=detail_id, order_id=order_id).first_or_404()
+    detail = SalesOrderDetail.query.filter_by(detailId=detail_id, orderId=order_id).first_or_404()
     
     try:
         order = detail.order
         db.session.delete(detail)
         
-        # Recalculate total
-        total = sum(d.line_total for d in order.order_details if d.detail_id != detail_id)
-        order.total_amount = total + float(order.tax_amount)
-        order.updated_at = datetime.utcnow()
+        total = sum(d.lineTotal for d in order.orderDetails if d.detailId != detail_id)
+        order.totalAmount = total + float(order.taxAmount)
+        order.updatedAt = datetime.utcnow()
         
         db.session.commit()
         
         socketio.emit('invoice_updated', {
-            'order_id': order_id,
-            'data': order.to_dict()
-        })
+            'orderId': order_id,
+            'data': order.toDict()
+        }, skip_sid=None)
         
         return jsonify({"message": "Detail deleted successfully"})
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 400
-

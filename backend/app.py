@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 import os
 
-# Load environment variables from .env file
 load_dotenv()
 
 from app import createApp, socketio
@@ -9,14 +8,13 @@ from app import createApp, socketio
 app = createApp()
 
 if __name__ == '__main__':
-    # IMPORTANT: avoid Werkzeug dev reloader on Windows with Flask-SocketIO
-    app.debug = False  # make sure Flask itself is not in debug mode
+    app.debug = False
 
     socketio.run(
         app,
-        host='127.0.0.1',   # local only
+        host='127.0.0.1',
         port=5000,
-        debug=False,        # do NOT enable debug here
-        use_reloader=False, # critical to avoid WinError 10038
+        debug=False,
+        use_reloader=False,
         allow_unsafe_werkzeug=True,
     )

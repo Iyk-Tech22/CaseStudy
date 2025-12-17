@@ -17,14 +17,13 @@ class GoogleLLMService:
         self.clientAvailable = False
         self.easyocrAvailable = False
         
-        # Check for EasyOCR
         try:
             import easyocr
             self.easyocr = easyocr
             self.ocrReader = None 
             self.easyocrAvailable = True
         except Exception as e:
-            print(f"⚠ EasyOCR not available: {e}")
+            print(f"[WARN] EasyOCR not available: {e}")
         
         if self.apiKey:
             try:
@@ -36,21 +35,22 @@ class GoogleLLMService:
                 self.clientAvailable = bool(self.modelName)
                 
                 if self.modelName:
-                    print(f"✓ Google Generative AI API token loaded (using {self.modelName})")
+                    print(f"[OK] Google Generative AI API token loaded (using {self.modelName})")
                 else:
-                    print("⚠ Could not find available model for content generation")
+                    print("[WARN] Could not find available model for content generation")
             except ImportError:
-                print("⚠ google-generativeai package not found. Install with: pip install google-generativeai")
+                print("[WARN] google-generativeai package not found. Install with: pip install google-generativeai")
             except Exception as e:
-                print(f"⚠ Error initializing Google API: {e}")
+                print(f"[WARN] Error initializing Google API: {e}")
         else:
-            print("⚠ Google API key not found. Using fallback data when API fails.")
+            print("[WARN] Google API key not found. Using fallback data when API fails.")
            
         self.generationConfig = {
-            "temperature": 0.1,
-            "top_p": 0.8,
+            "temperature": 0.7,
+            "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 4000,
+            "max_output_tokens": 8192,
+            "response_mime_type": "application/json", 
         }
         
         self.safetySettings = [
@@ -94,7 +94,7 @@ class GoogleLLMService:
     def extractTextFromImage(self, imagePath: str) -> str:
         """Extract text from image using EasyOCR"""
         if not self.easyocrAvailable:
-            print("⚠ EasyOCR not available, attempting Gemini vision extraction")
+            print("[WARN] EasyOCR not available, attempting Gemini vision extraction")
             return self._extractViaGeminiVision(imagePath)
         
         try:
@@ -108,10 +108,10 @@ class GoogleLLMService:
             text = "\n".join([line[1] for line in result if line[1]])
             
             if text and len(text.strip()) > 10:
-                print(f"✓ Extracted {len(text)} characters from image using EasyOCR")
+                print(f"[OK] Extracted {len(text)} characters from image using EasyOCR")
                 return text
             else:
-                print("⚠ Image OCR returned insufficient text, trying Gemini vision")
+                print("[WARN] Image OCR returned insufficient text, trying Gemini vision")
                 return self._extractViaGeminiVision(imagePath)
         except Exception as e:
             print(f"Error with EasyOCR: {e}, falling back to Gemini vision")
@@ -135,7 +135,7 @@ class GoogleLLMService:
             
             # If we got enough text, return it
             if text and len(text.strip()) > 100:
-                print(f"✓ Extracted {len(text)} characters from PDF using text extraction")
+                print(f"[OK] Extracted {len(text)} characters from PDF using text extraction")
                 return text
             
             # If text extraction didn't work well, try OCR with EasyOCR
@@ -162,16 +162,16 @@ class GoogleLLMService:
                             ocrText += f"--- Page {pageNum} ---\n{pageText}\n"
                     
                     if ocrText and len(ocrText.strip()) > 100:
-                        print(f"✓ Extracted {len(ocrText)} characters from PDF using EasyOCR")
+                        print(f"[OK] Extracted {len(ocrText)} characters from PDF using EasyOCR")
                         return ocrText
                 except Exception as e:
                     print(f"PDF OCR extraction failed: {e}")
             
             if text:
-                print(f"⚠ PDF extraction returned {len(text)} characters (limited)")
+                print(f"[WARN] PDF extraction returned {len(text)} characters (limited)")
                 return text
             else:
-                print("⚠ Could not extract text from PDF")
+                print("[WARN] Could not extract text from PDF")
                 return ""
                 
         except Exception as e:
@@ -181,7 +181,7 @@ class GoogleLLMService:
     def _extractViaGeminiVision(self, imagePath: str) -> str:
         """Use Gemini's vision API to extract text from image"""
         if not self.clientAvailable:
-            print("⚠ Google API not available for vision extraction")
+            print("[WARN] Google API not available for vision extraction")
             return ""
         
         try:
@@ -215,10 +215,10 @@ class GoogleLLMService:
             
             if response and response.text:
                 text = response.text.strip()
-                print(f"✓ Extracted {len(text)} characters using Gemini vision API")
+                print(f"[OK] Extracted {len(text)} characters using Gemini vision API")
                 return text
             else:
-                print("⚠ No text extracted from image via Gemini")
+                print("[WARN] No text extracted from image via Gemini")
                 return ""
                 
         except Exception as e:
@@ -243,14 +243,17 @@ class GoogleLLMService:
         try:
             prompt = f"""You are a professional document processing AI specialized in invoice data extraction. Your task is to analyze the provided document text and extract structured information as a valid JSON object.
 
-CRITICAL INSTRUCTIONS:
+CRITICAL INSTRUCTIONS - READ CAREFULLY:
 1. Return ONLY a complete and valid JSON object - no additional text, markdown, or code blocks
 2. MUST start with '{{' and MUST end with '}}'
-3. ALL closing braces }} and brackets ] MUST be included - do not truncate
-4. If a field cannot be found, use empty string "" for text and 0 for numbers
-5. All required fields must be present in the output
-6. Parse dates to ISO format (YYYY-MM-DD)
-7. Amounts are numbers only, no currency symbols
+3. MUST include ALL closing braces }} and brackets ] - DO NOT truncate
+4. The JSON MUST BE COMPLETE - include all fields even if empty
+5. If a field cannot be found, use empty string "" for text and 0 for numbers
+6. All required fields must be present in the output
+7. Parse dates to ISO format (YYYY-MM-DD)
+8. Amounts are numbers only, no currency symbols
+9. **IMPORTANT: Generate the ENTIRE JSON object, do not stop in the middle**
+10. **DO NOT truncate the response even if it gets long**
 
 REQUIRED DATA STRUCTURE:
 {{
@@ -274,21 +277,12 @@ REQUIRED DATA STRUCTURE:
   ]
 }}
 
-EXTRACTION GUIDELINES:
-- "customer_name": Look for "Bill To:", "Customer:", "Client:", "Name:" or similar
-- "customer_email": Look for "Email:", "@" symbol patterns
-- "order_date": Look for "Date:", "Invoice Date:", "Order Date:" - convert to YYYY-MM-DD
-- "invoice_number": Look for "Invoice #:", "Receipt #:", "Order #:" 
-- "total_amount": Look for "Total:", "Amount Due:", "Grand Total:" - extract numeric value only
-- "tax_amount": Look for "Tax:", "VAT:", "GST:", "Tax Amount:" - extract numeric value only
-- "shipping_address": Look for "Ship To:", "Delivery Address:", "Shipping:" 
-- "billing_address": Look for "Bill To:", "Billing Address:", "Invoice Address:"
-- "order_details": Extract line items, typically in a table format with product information
+FINAL REMINDER: The response must be a SINGLE COMPLETE JSON OBJECT. Start with '{{' and end with '}}'. Include all closing braces and brackets.
 
 DOCUMENT TEXT TO PROCESS:
 {documentText[:4000]}
 
-Return ONLY the complete, valid JSON object with ALL closing braces and brackets. Do not truncate or omit any closing characters."""
+Return ONLY the complete, valid JSON object:"""
 
             model = self.genai.GenerativeModel(
                 model_name=self.modelName,
@@ -299,7 +293,7 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
             response = model.generate_content(prompt)
             
             if response and response.text:
-                print("✓ Got response from Google Generative AI")
+                print("[OK] Got response from Google Generative AI")
                 print(f"Response preview: {response.text}")
                 parsed = self._parseJsonResponse(response.text)
                 return parsed
@@ -333,16 +327,31 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
                 print(f"DEBUG - Extracted JSON string (length {len(jsonStr)})")
                 print(f"DEBUG - Attempting to parse JSON...")
                 data = json.loads(jsonStr)
-                print(f"DEBUG - JSON parsed successfully!")
+                print(f"[OK] JSON parsed successfully!")
                 return data
             else:
                 print(f"DEBUG - No valid JSON delimiters found (startIdx={startIdx}, endIdx={endIdx})")
-                # Try to handle incomplete JSON by adding missing closing brace
                 if startIdx >= 0 and endIdx == -1:
                     print("DEBUG - JSON appears incomplete, attempting to fix...")
-                    jsonStr = text[startIdx:] + "}"
+                    jsonStr = text[startIdx:]
+                    
+                    lines = jsonStr.split('\n')
+                    lastLine = lines[-1] if lines else ""
+                    quoteCount = 0
+                    i = 0
+                    while i < len(jsonStr):
+                        if jsonStr[i] == '"' and (i == 0 or jsonStr[i-1] != '\\'):
+                            quoteCount += 1
+                        i += 1
+                    if quoteCount % 2 == 1:
+                        jsonStr += '"'
+                    openBraces = jsonStr.count('{') - jsonStr.count('}')
+                    openBrackets = jsonStr.count('[') - jsonStr.count(']')
+                    jsonStr += ']' * openBrackets + '}' * openBraces
+                    
                     try:
                         data = json.loads(jsonStr)
+                        print(f"[OK] Successfully fixed incomplete JSON")
                         return data
                     except json.JSONDecodeError as e:
                         print(f"DEBUG - Failed with fix: {e}")
@@ -375,6 +384,13 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
                     return cleanedData
                 else:
                     print(f"API failed: {result.get('error')}, using fallback...")
+                    fallbackData = self._generateFallbackData()
+                    cleanedData = self._cleanExtractedData(fallbackData)
+                    cleanedData["extracted_text_preview"] = documentText[:500]
+                    return {
+                        "error": result.get('error'),
+                        "fallback_data": cleanedData
+                    }
             
             # Fallback to rule-based extraction
             localData = self._localExtraction(documentText)
@@ -386,18 +402,21 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
         except Exception as e:
             print(f"Error in extractInvoiceData: {e}")
             traceback.print_exc()
+            fallbackData = self._generateFallbackData()
+            cleanedData = self._cleanExtractedData(fallbackData)
             return {
                 "error": str(e),
-                "fallback_data": self._generateFallbackData()
+                "fallback_data": cleanedData
             }
     
     def _localExtraction(self, text: str) -> Dict[str, Any]:
         """Fallback rule-based extraction from text"""
+        import time
         data = {
             "customer_name": "",
             "customer_email": "",
             "order_date": "",
-            "invoice_number": f"INV-{abs(hash(text)) % 10000:04d}",
+            "invoice_number": f"LOCAL-{int(time.time())}-{random.randint(1000, 9999)}",
             "total_amount": 0.0,
             "tax_amount": 0.0,
             "shipping_address": "",
@@ -443,11 +462,17 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
     
     def _cleanExtractedData(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Clean and validate extracted data"""
+        import time
+        # Generate a safe fallback invoice number if needed
+        invoice_num = data.get("invoice_number", "").strip()
+        if not invoice_num or len(invoice_num) < 2:
+            invoice_num = f"AUTO-{int(time.time())}-{random.randint(1000, 9999)}"
+        
         cleaned = {
             "customer_name": data.get("customer_name", "Unknown Customer"),
             "customer_email": data.get("customer_email", ""),
             "order_date": data.get("order_date", ""),
-            "invoice_number": data.get("invoice_number", f"INV-{abs(hash(str(data))) % 10000:04d}"),
+            "invoice_number": invoice_num,
             "total_amount": float(data.get("total_amount", 0.0)),
             "tax_amount": float(data.get("tax_amount", 0.0)),
             "shipping_address": data.get("shipping_address", ""),
@@ -467,12 +492,10 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
                         "line_total": float(detail.get("line_total", 0.0)),
                         "description": detail.get("description", "")
                     }
-                    # Calculate line_total if not provided
                     if cleanedDetail["line_total"] == 0.0:
                         cleanedDetail["line_total"] = cleanedDetail["quantity"] * cleanedDetail["unit_price"]
                     cleaned["order_details"].append(cleanedDetail)
         
-        # Calculate total if not provided or incorrect
         if cleaned["total_amount"] == 0.0 and cleaned["order_details"]:
             subtotal = sum(d["line_total"] for d in cleaned["order_details"])
             cleaned["total_amount"] = subtotal + cleaned["tax_amount"]
@@ -481,7 +504,9 @@ Return ONLY the complete, valid JSON object with ALL closing braces and brackets
     
     def _generateFallbackData(self) -> Dict[str, Any]:
         """Generate sample data if LLM extraction fails"""
-        invoiceNum = f"INV-FALLBACK-{random.randint(1000, 9999)}"
+        # Generate unique invoice number with timestamp to ensure uniqueness
+        import time
+        invoiceNum = f"FALLBACK-{int(time.time())}-{random.randint(1000, 9999)}"
         orderDate = (datetime.now() - timedelta(days=random.randint(1, 30))).strftime('%Y-%m-%d')
         
         sampleProducts = [

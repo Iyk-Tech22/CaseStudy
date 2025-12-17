@@ -8,10 +8,20 @@ import os
 import threading
 import uuid
 import traceback
+import logging
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint('api', __name__)
 llmService = GoogleLLMService()
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'gif'}
+
+def safe_socketio_emit(event, data, **kwargs):
+    """Safely emit socketio events with error handling"""
+    try:
+        socketio.emit(event, data, **kwargs)
+    except Exception as e:
+        logger.warning(f"SocketIO emit failed for event '{event}': {str(e)}")
 
 def allowedFile(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -78,106 +88,116 @@ def processDocument(jobId, filePath, fileType, uploadFolder, appInstance=None):
         from app import createApp
         appInstance = createApp()
     
-    with appInstance.app_context():
-        try:
-            socketio.emit('processing_status', {
-                'jobId': jobId,
-                'status': 'processing',
-                'message': 'Extracting data from document...'
-            })
-            
-            extractedData = llmService.extractInvoiceData(filePath, fileType)
-            
-            if "error" in extractedData and "fallback_data" not in extractedData:
-                socketio.emit('processing_status', {
-                    'jobId': jobId,
-                    'status': 'error',
-                    'message': extractedData.get('error', 'Unknown error occurred')
-                })
-                return
-            
-            data = extractedData.get('fallback_data', extractedData) if "fallback_data" in extractedData else extractedData
-            
-            socketio.emit('processing_status', {
-                'jobId': jobId,
-                'status': 'extracted',
-                'message': 'Data extracted successfully',
-                'data': data,
-            })
-            
+    try:
+        with appInstance.app_context():
             try:
-                orderDate = None
-                if data.get('order_date'):
-                    try:
-                        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y'):
-                            try:
-                                orderDate = datetime.strptime(data['order_date'], fmt).date()
-                                break
-                            except ValueError:
-                                continue
-                    except Exception:
-                        orderDate = datetime.now().date()
-                else:
-                    orderDate = datetime.now().date()
-                
-                order = SalesOrderHeader(
-                    customerName=data.get('customer_name', ''),
-                    customerEmail=data.get('customer_email', ''),
-                    orderDate=orderDate,
-                    invoiceNumber=data.get('invoice_number', ''),
-                    totalAmount=data.get('total_amount', 0.0),
-                    taxAmount=data.get('tax_amount', 0.0),
-                    shippingAddress=data.get('shipping_address', ''),
-                    billingAddress=data.get('billing_address', ''),
-                    status='extracted',
-                )
-                
-                db.session.add(order)
-                db.session.flush()
-                
-                for detailData in data.get('order_details', []):
-                    detail = SalesOrderDetail(
-                        orderId=order.orderId,
-                        productName=detailData['product_name'],
-                        productCode=detailData.get('product_code', ''),
-                        quantity=detailData['quantity'],
-                        unitPrice=detailData['unit_price'],
-                        lineTotal=detailData['line_total'],
-                        description=detailData.get('description', '')
-                    )
-                    db.session.add(detail)
-                
-                db.session.commit()
-                
-                socketio.emit('processing_status', {
+                safe_socketio_emit('processing_status', {
                     'jobId': jobId,
-                    'status': 'completed',
-                    'message': 'Invoice saved to database',
-                    'orderId': order.orderId,
-                    'data': order.toDict(),
+                    'status': 'processing',
+                    'message': 'Extracting data from document...'
                 })
                 
-            except Exception as e:
-                db.session.rollback()
-                errorTrace = traceback.format_exc()
-                print(f"Database error: {errorTrace}")
+                extractedData = llmService.extractInvoiceData(filePath, fileType)
+                  
+                # Check if extraction failed without usable data
+                has_error = "error" in extractedData
+                has_fallback = "fallback_data" in extractedData
                 
-                socketio.emit('processing_status', {
+                if has_error and not has_fallback:
+                    safe_socketio_emit('processing_status', {
+                        'jobId': jobId,
+                        'status': 'error',
+                        'message': extractedData.get('error', 'Unknown error occurred')
+                    })
+                    return
+                
+                # Use fallback only if API failed, otherwise use extracted data
+                if has_error and has_fallback:
+                    data = extractedData['fallback_data']
+                else:
+                    data = extractedData
+                
+                safe_socketio_emit('processing_status', {
+                    'jobId': jobId,
+                    'status': 'extracted',
+                    'message': 'Data extracted successfully',
+                    'data': data,
+                })
+                
+                try:
+                    orderDate = None
+                    if data.get('order_date'):
+                        try:
+                            for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y'):
+                                try:
+                                    orderDate = datetime.strptime(data['order_date'], fmt).date()
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception:
+                            orderDate = datetime.now().date()
+                    else:
+                        orderDate = datetime.now().date()
+                    
+                    order = SalesOrderHeader(
+                        customerName=data.get('customer_name', ''),
+                        customerEmail=data.get('customer_email', ''),
+                        orderDate=orderDate,
+                        invoiceNumber=data.get('invoice_number', ''),
+                        totalAmount=data.get('total_amount', 0.0),
+                        taxAmount=data.get('tax_amount', 0.0),
+                        shippingAddress=data.get('shipping_address', ''),
+                        billingAddress=data.get('billing_address', ''),
+                        status='extracted',
+                    )
+                    
+                    db.session.add(order)
+                    db.session.flush()
+                    
+                    for detailData in data.get('order_details', []):
+                        detail = SalesOrderDetail(
+                            orderId=order.orderId,
+                            productName=detailData['product_name'],
+                            productCode=detailData.get('product_code', ''),
+                            quantity=detailData['quantity'],
+                            unitPrice=detailData['unit_price'],
+                            lineTotal=detailData['line_total'],
+                            description=detailData.get('description', '')
+                        )
+                        db.session.add(detail)
+                    
+                    db.session.commit()
+                    
+                    safe_socketio_emit('processing_status', {
+                        'jobId': jobId,
+                        'status': 'completed',
+                        'message': 'Invoice saved to database',
+                        'orderId': order.orderId,
+                        'data': order.toDict(),
+                    })
+                    
+                except Exception as e:
+                    db.session.rollback()
+                    errorTrace = traceback.format_exc()
+                    print(f"Database error: {errorTrace}")
+                    safe_socketio_emit('processing_status', {
+                        'jobId': jobId,
+                        'status': 'error',
+                        'message': f'Database error: {str(e)}'
+                    })
+            
+            except Exception as e:
+                errorTrace = traceback.format_exc()
+                print(f"Processing error: {errorTrace}")
+                safe_socketio_emit('processing_status', {
                     'jobId': jobId,
                     'status': 'error',
-                    'message': f'Database error: {str(e)}'
+                    'message': f'Processing error: {str(e)}'
                 })
-        
-            
-        except Exception as e:
-            errorTrace = traceback.format_exc()
-            print(f"Processing error: {errorTrace}")
-            
-            socketio.emit('processing_status', {
-                'jobId': jobId,
-                'status': 'error',
-                'message': f'Processing error: {str(e)}'
-            })
+    except Exception as outer_error:
+        # Catch any errors in app context setup
+        errorTrace = traceback.format_exc()
+        print(f"Outer error in processDocument: {errorTrace}")
 
 @bp.route('/api/invoices', methods=['GET'])
 def getInvoices():
@@ -235,7 +255,7 @@ def updateInvoice(order_id):
         order.updatedAt = datetime.utcnow()
         db.session.commit()
         
-        socketio.emit('invoice_updated', {
+        safe_socketio_emit('invoice_updated', {
             'orderId': order_id,
             'data': order.toDict()
         }, skip_sid=None)
@@ -256,7 +276,7 @@ def deleteInvoice(order_id):
         db.session.delete(order)
         db.session.commit()
         
-        socketio.emit('invoice_deleted', {'orderId': order_id}, skip_sid=None)
+        safe_socketio_emit('invoice_deleted', {'orderId': order_id}, skip_sid=None)
         
         return jsonify({"message": "Invoice deleted successfully"})
     except Exception as e:
@@ -303,7 +323,7 @@ def updateInvoiceDetails(order_id):
         
         db.session.commit()
         
-        socketio.emit('invoice_updated', {
+        safe_socketio_emit('invoice_updated', {
             'orderId': order_id,
             'data': order.toDict()
         }, skip_sid=None)
@@ -330,7 +350,7 @@ def deleteInvoiceDetail(order_id, detail_id):
         
         db.session.commit()
         
-        socketio.emit('invoice_updated', {
+        safe_socketio_emit('invoice_updated', {
             'orderId': order_id,
             'data': order.toDict()
         }, skip_sid=None)

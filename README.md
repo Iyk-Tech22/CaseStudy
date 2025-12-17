@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Python 3.8+ installed
+- Python 3.12.2 installed
 - Node.js 18+ and npm installed
 - Google AI API token for better LLM performance
 

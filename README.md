@@ -34,12 +34,11 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. (Optional) Set up environment variables:
+1. Set up environment variables:
    Create a `.env` file in the `backend` directory:
 
 ```
-HUGGINGFACE_API_TOKEN=your_token_here
-SECRET_KEY=dev-secret-key-change-in-production
+GOOGLE_API_KEY=your_token_here
 DATABASE_URL=sqlite:///invoice_extraction.db
 ```
 
